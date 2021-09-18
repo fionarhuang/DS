@@ -1,0 +1,305 @@
+---
+title: "A toy example of using treeclimbR on multiple features per entity"
+author: "fionarhuang"
+date: "2021-09-18"
+output: workflowr::wflow_html
+editor_options:
+  chunk_output_type: console
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r}
+suppressPackageStartupMessages({
+  library(TreeSummarizedExperiment)
+  library(ggtree)
+  library(ape)
+  library(treeclimbR)
+  library(TreeHeatmap)
+  library(ggnewscale)
+  library(ggplot2)
+}) 
+```
+
+This a toy example to help understand how treeclimbR works on the `DS` case where each entity (e.g., cell subpopulation in scRNA-seq data) has multiple features (e.g., genes). The main difference in data structure between the `DA` and the `DS` case is in the number of features that need to be taken into account in the FDR control. 
+
+# Generate a toy dataset
+
+## Tree
+```{r}
+# Generate a random tree
+set.seed(1)
+n <- 100
+tree <- rtree(n)
+
+# Add labels on nodes
+tree <- addLabel(tree = tree, 
+                 label = c(paste0("L", seq_len(n)), paste0("N", seq_len(n-1))),
+                 on = "all")
+```
+
+## Count tables
+
+Simulate counts of 10 features for 100 entities in 30 samples. 15 samples in group A, the other 15 samples in group B. 
+```{r}
+# The proportions of features 
+pfun <- function(n, shape1 = 2, shape2 = 3) {
+  p <- rbeta(n = n, shape1 = shape1, shape2 = shape2)
+  p/sum(p)
+}
+pmat <- rbind(c(2, 3), c(2, 2), c(3, 5), c(2, 5), c(1, 4),
+              c(3, 4), c(3, 2), c(4, 3), c(1, 5), c(1, 3)) 
+rownames(pmat) <- paste0("gene", 1:10)
+plist <- apply(pmat, 1, FUN = function(x){
+  pfun(n = 100, shape1 = x[1], shape2 = x[2])
+})
+
+
+# Generate counts of features
+## Create samples for two groups, each group having m samples
+m <- 15
+countList <- lapply(seq_len(ncol(plist)), FUN = function(x){
+  xx <- rmultinom(n = m*2, size = 2000, prob = plist[, x])
+  rownames(xx) <- paste0("L", 1:100)
+  colnames(xx) <- paste0(rep(LETTERS[1:2], each = m), c(1:m, 1:m))
+  return(xx)
+})
+
+
+# randomly select 5 internal nodes in the tree
+intNode <- setdiff(showNode(tree, only.leaf = FALSE),
+               showNode(tree, only.leaf = TRUE))
+nd <- sample(x = intNode, size = 5, replace = FALSE)
+names(nd) <- paste0("feature", 1:5)
+
+# For descendant leaves of the selected nodes:
+# - Multiply their counts in the first group by a value fc
+sigList <- findDescendant(tree = tree, node = nd)
+sigList <- lapply(sigList, convertNode, tree = tree)
+fc <- 3
+
+for (i in seq_along(sigList)) {
+  countList[[i]][sigList[[i]], 1:m] <- countList[[i]][sigList[[i]], 1:m] * fc
+}
+names(countList) <- paste0("feature", 1:10)
+```
+
+
+## create a treeSE object
+
+```{r}
+sampInfo <- data.frame(group = rep(LETTERS[1:2], each = m))
+lse <- TreeSummarizedExperiment(assays = countList, rowTree = tree, 
+                                colData = sampInfo)
+lse
+
+```
+
+## Data aggregation
+
+```{r}
+all_node <- showNode(tree = tree, only.leaf = FALSE)
+tse <- aggTSE(x = lse, rowLevel = all_node, rowFun = sum, whichAssay = 1:10)
+rownames(tse) <- convertNode(tree = rowTree(tse), node = rowLinks(tse)$nodeNum)
+tse
+```
+
+
+# Viz the toy data
+
+Only five features (features 1-5) have signals. Each feature has one signal branch with branch 1-5 for features 1-5 correspondingly. The five signal branches are randomly selected and vary in branch sizes. Heatmaps are simulated counts of features in 30 samples that belong to two different groups. Samples are in columns. The first 15 samples belong to the group A, and the rest belong to the group B.
+
+```{r}
+ggtree(tree, branch.length = "none") +
+  geom_hilight(node = nd[1], fill = "red", alpha = 0.2, extend = 1.5) +
+  geom_hilight(node = nd[2], fill = "blue", alpha = 0.2, extend = 1.5) +
+  geom_hilight(node = nd[3], fill = "orange", alpha = 0.2, extend = 1.5) +
+  geom_hilight(node = nd[4], fill = "yellow", alpha = 0.2, extend = 1.5) +
+  geom_hilight(node = nd[5], fill = "navy", alpha = 0.2, extend = 1.5) +
+  geom_cladelab(node = nd[1], label =  "1", fill = "red", fontsize = 3) +
+  geom_cladelab(node = nd[2], label =  "2", fill = "red", fontsize = 3) +
+  geom_cladelab(node = nd[3], label =  "3", fill = "red", fontsize = 3) +
+  geom_cladelab(node = nd[4], label =  "4", fill = "red", fontsize = 3) +
+  geom_cladelab(node = nd[5], label =  "5", fill = "red", fontsize = 3) +
+  geom_point2(aes(subset = node %in% c(nd)), color = "red") +
+  geom_th_heatmap(name = "feature1", th_data = log10(assays(lse)[[1]]), rel_width = 0.3, gap = 2) + 
+  geom_th_title(name = "feature1", side = "top", label = "feature1", size = 2, nudge_y = 1) +
+  scale_fill_viridis_c(option = "A") +
+  new_scale_fill() +
+  geom_th_heatmap(name = "feature2", th_data = log10(assays(lse)[[2]]), rel_width = 0.3) + 
+  geom_th_title(name = "feature2", side = "top", label = "feature2", size = 2, nudge_y = 1) +
+  scale_fill_viridis_c(option = "A") +
+  new_scale_fill() +
+  geom_th_heatmap(name = "feature3", th_data = log10(assays(lse)[[3]]), rel_width = 0.3) + 
+  geom_th_title(name = "feature3", side = "top", label = "feature3", size = 2, nudge_y = 1) +
+  scale_fill_viridis_c(option = "A") +
+  new_scale_fill() +
+  geom_th_heatmap(name = "feature4", th_data = log10(assays(lse)[[4]]), rel_width = 0.3) + 
+  geom_th_title(name = "feature4", side = "top", label = "feature4", size = 2, nudge_y = 1) +
+  scale_fill_viridis_c(option = "A") +
+  new_scale_fill() +
+  geom_th_heatmap(name = "feature5", th_data = log10(assays(lse)[[5]]), rel_width = 0.3) + 
+  geom_th_title(name = "feature5", side = "top", label = "feature5", size = 2, nudge_y = 1) +
+  scale_fill_viridis_c(option = "A") +
+  theme(legend.position = "none") +
+  scale_y_continuous(expand = c(0.1, 0.1))
+
+```
+
+
+Features 6-10 have no signal.
+
+```{r}
+ggtree(tree, branch.length = "none") +
+  geom_th_heatmap(name = "feature6", th_data = log10(assays(lse)[[6]]), rel_width = 0.3, gap = 2) + 
+  geom_th_title(name = "feature6", side = "top", label = "feature6", size = 2, nudge_y = 1) +
+  scale_fill_viridis_c(option = "A") +
+  new_scale_fill() +
+  geom_th_heatmap(name = "feature7", th_data = log10(assays(lse)[[7]]), rel_width = 0.3) + 
+  geom_th_title(name = "feature7", side = "top", label = "feature7", size = 2, nudge_y = 1) +
+  scale_fill_viridis_c(option = "A") +
+  new_scale_fill() +
+  geom_th_heatmap(name = "feature8", th_data = log10(assays(lse)[[8]]), rel_width = 0.3) + 
+  geom_th_title(name = "feature8", side = "top", label = "feature8", size = 2, nudge_y = 1) +
+  scale_fill_viridis_c(option = "A") +
+  new_scale_fill() +
+  geom_th_heatmap(name = "feature9", th_data = log10(assays(lse)[[9]]), rel_width = 0.3) + 
+  geom_th_title(name = "feature9", side = "top", label = "feature9", size = 2, nudge_y = 1) +
+  scale_fill_viridis_c(option = "A") +
+  new_scale_fill() +
+  geom_th_heatmap(name = "feature10", th_data = log10(assays(lse)[[10]]), rel_width = 0.3) + 
+  geom_th_title(name = "feature10", side = "top", label = "feature10", size = 2, nudge_y = 1) +
+  scale_fill_viridis_c(option = "A") +
+  theme(legend.position = "none") +
+  scale_y_continuous(expand = c(0.1, 0.1))
+
+```
+
+
+# Differential analysis
+
+The non-parametric method, Wilcoxon sum rank test, is performed to obtain P values and directions for all features on each node of the tree. 
+
+```{r}
+# a function to run the wilcox.test
+test.func <- function(X, Y) {  
+  Y <- as.numeric(factor(Y))
+  obj <- apply(X, 1, function(x) {                
+    p.value <- suppressWarnings(wilcox.test(x ~ Y)$p.value)
+    p.value[is.na(p.value)] <- 1
+    e.sign <- sign(mean(x[Y == 2]) - mean(x[Y == 1]))
+    c(p.value, e.sign)          
+  })
+  df <- data.frame(node = rowLinks(tse)$nodeNum,
+                   pvalue = obj[1, ],
+                   sign = obj[2, ])
+  return(df)
+}
+
+```
+
+`outW` is a list of 10 data frame, each of which is the differential analysis result of a feature.
+```{r}
+# run differential analysis for all features
+Y <- colData(tse)$group
+XList <- assays(tse)
+
+outW <- lapply(1:10, FUN = function(i){
+  df <- test.func(X = XList[[i]], Y = Y)
+  df$feature <- names(XList)[i]
+  return(df)
+  })
+names(outW) <- names(XList)
+head(outW$feature1)
+```
+
+
+
+# Get candidates
+
+Candidates are proposed separately for each feature.
+
+```{r}
+cand <- lapply(outW, FUN = function(x) {
+  getCand(tree = tree, score_data = x, node_column = "node",
+          p_column = "pvalue", sign_column = "sign", message = FALSE) })
+
+# 10 features
+names(cand)
+
+# candidates for feature 1 at specific t values
+names(cand$feature1$candidate_list)
+
+
+```
+
+Candidate proposed for different features are different at the same `t` if the signal patterns of features differ. The candidate proposed for features 6-10 that have no signal is the leaf level (the tree has 100 leaves). 
+```{r}
+# The number of nodes in a candidate generated at t = 0.3 for different features
+sapply(cand, FUN = function(x){length(x$candidate_list[["0.3"]])})
+```
+
+
+# Evaluate candidates
+```{r}
+cand_list <- lapply(cand, FUN = function(x){x$candidate_list})
+res <- evalCand(tree = tree, type = "multiple",  
+                levels = cand_list, score_data = outW,
+                node_column = "node", p_column = "pvalue", sign_column = "sign", 
+                feature_column = "feature")
+```
+
+
+# Results
+
+In the simulation step, signals were created on different internal nodes for different features (`nd`). Signal nodes identified by `treeclimbR` are in `found`. Results are the numeric ID of signal nodes. `treeclimbR` has perfectly identified those signal nodes for features 1-5 in this toy example.
+```{r}
+out <- res$output
+
+# results of treeclimbR
+(found <- setNames(out[out$signal.node, ]$node,
+                   out[out$signal.node, ]$feature))
+
+# the truth
+nd
+```
+
+# More about the results
+
+There are 7 elements in the result list `res`.
+```{r}
+names(res)
+```
+
+The best candidate levels picked for the first five features are different because we have assigned signals on different nodes. There are no signal for the last five features, so their best candidate levels are all on the leaf level (node ID: 1-100).
+```{r}
+res$candidate_best
+```
+
+There are two options `type = single` and `type = multiple` for `evalCand`. When `type = multiple` is used, the output table has one more column `feature`.
+```{r}
+out <- res$output
+head(out)
+
+```
+
+Signal nodes are found for different features.
+```{r}
+out[out$signal.node, ]
+```
+
+Candidates proposed for different features at different `t` values are available in the `candidate_list`
+```{r}
+names(res$candidate_list)
+names(res$candidate_list$feature1)
+```
+
+```{r}
+res$FDR
+res$method
+res$column_info
+```
+
