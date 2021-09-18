@@ -1,4 +1,4 @@
-name: "DS"
+name: DS
 output_dir: ../docs
 navbar:
   title: Toy Examples
@@ -8,10 +8,9 @@ navbar:
   - text: DS
     href: DS_toy.html
   right:
-  - text: Robinson Lab
-    href: https://robinsonlabuzh.github.io
   - icon: fa-github
-    href:
+    text: Source code
+    href: https://github.com/fionarhuang/DS
 output:
   workflowr::wflow_html:
     toc: yes
